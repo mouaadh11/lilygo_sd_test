@@ -1,137 +1,128 @@
 #include <Arduino.h>
+#include <WiFi.h>
 #include <SPI.h>
 #include <SD.h>
+#include <ESPFMfGK.h>
 
 #define SD_MISO 2
 #define SD_MOSI 15
 #define SD_SCLK 14
-#define SD_CS   13
+#define SD_CS 13
 
-void listDir(fs::FS &fs, const char *dirname, uint8_t levels) {
-  Serial.printf("Listing directory: %s\n", dirname);
+const char *AP_SSID = "ESP32_SD_SERVER";
+const char *AP_PASS = "12345678";
 
-  File root = fs.open(dirname);
-  if (!root) {
-    Serial.println("Failed to open directory");
-    return;
+ESPFMfGK filemgr(80);
+
+uint32_t checkFileFlags(fs::FS &fs, String filename, uint32_t flags)
+{
+  Serial.print("checkFileFlags: ");
+  Serial.println(filename);
+
+  if (filename.indexOf("/.Trash") >= 0 ||
+      filename.indexOf("/Android") >= 0 ||
+      filename.indexOf("/LOST.DIR") >= 0 ||
+      // filename.indexOf("/DCIM") >= 0 ||
+      filename.indexOf("/System Volume Information") >= 0)
+  {
+    return ESPFMfGK::flagIsNotVisible;
   }
 
-  if (!root.isDirectory()) {
-    Serial.println("Not a directory");
-    return;
-  }
-
-  File file = root.openNextFile();
-
-  while (file) {
-    if (file.isDirectory()) {
-      Serial.print("DIR : ");
-      Serial.println(file.name());
-
-      if (levels) {
-        listDir(fs, file.path(), levels - 1);
-      }
-    } else {
-      Serial.print("FILE: ");
-      Serial.print(file.name());
-      Serial.print("  SIZE: ");
-      Serial.println(file.size());
-    }
-
-    file = root.openNextFile();
-  }
+  return ESPFMfGK::flagCanDelete |
+         ESPFMfGK::flagCanRename |
+         ESPFMfGK::flagCanEdit |
+         ESPFMfGK::flagAllowPreview |
+         ESPFMfGK::flagCanDownload |
+         ESPFMfGK::flagCanUpload |
+         ESPFMfGK::flagIsValidTargetFilename |
+         ESPFMfGK::flagIsValidAction |
+         ESPFMfGK::flagCanCreateNew;
 }
 
-void writeFile(fs::FS &fs, const char *path, const char *message) {
-  Serial.printf("Writing file: %s\n", path);
-
-  File file = fs.open(path, FILE_WRITE);
-  if (!file) {
-    Serial.println("Failed to open file for writing");
-    return;
-  }
-
-  if (file.print(message)) {
-    Serial.println("File written successfully");
-  } else {
-    Serial.println("Write failed");
-  }
-
-  file.close();
-}
-
-void readFile(fs::FS &fs, const char *path) {
-  Serial.printf("Reading file: %s\n", path);
-
-  File file = fs.open(path);
-  if (!file) {
-    Serial.println("Failed to open file for reading");
-    return;
-  }
-
-  Serial.println("File content:");
-  while (file.available()) {
-    Serial.write(file.read());
-  }
-
-  file.close();
-  Serial.println();
-}
-
-void setup() {
+void setup()
+{
   Serial.begin(115200);
   delay(2000);
 
   Serial.println();
-  Serial.println("=================================");
-  Serial.println("LILYGO ESP32 SD Card Test");
-  Serial.println("=================================");
+  Serial.println("ESP32 SD Web File Manager");
 
   SPI.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS);
 
-  if (!SD.begin(SD_CS, SPI)) {
+  // Slower SPI = more stable for big SD cards
+  if (!SD.begin(SD_CS, SPI, 4000000))
+  {
     Serial.println("SD card mount failed!");
-    Serial.println();
-    Serial.println("Try this:");
-    Serial.println("1. Check SD card is inserted");
-    Serial.println("2. Format SD card as FAT32");
-    Serial.println("3. Remove SD card during upload");
-    Serial.println("4. Insert SD card after upload");
-    Serial.println("5. Press RESET");
     return;
   }
 
-  Serial.println("SD card mounted successfully!");
+  Serial.println("SD mounted.");
 
-  uint8_t cardType = SD.cardType();
+  if (!SD.exists("/ESP32"))
+  {
+    SD.mkdir("/ESP32");
+    Serial.println("Created /ESP32 folder.");
+  }
 
-  if (cardType == CARD_NONE) {
-    Serial.println("No SD card attached");
+  if (!SD.exists("/ESP32/hello.txt"))
+  {
+    File f = SD.open("/ESP32/hello.txt", FILE_WRITE);
+    if (f)
+    {
+      f.println("Hello from ESP32 file manager!");
+      f.close();
+      Serial.println("Created /ESP32/hello.txt");
+    }
+  }
+  Serial.println("Checking /ESP32 content:");
+
+  File dir = SD.open("/ESP32");
+  File file = dir.openNextFile();
+
+  while (file)
+  {
+    Serial.print(file.isDirectory() ? "DIR : " : "FILE: ");
+    Serial.print(file.name());
+    Serial.print(" SIZE: ");
+    Serial.println(file.size());
+
+    file = dir.openNextFile();
+  }
+
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(AP_SSID, AP_PASS);
+
+  Serial.print("Connect to WiFi: ");
+  Serial.println(AP_SSID);
+  Serial.print("Password: ");
+  Serial.println(AP_PASS);
+  Serial.print("Open: http://");
+  Serial.println(WiFi.softAPIP());
+
+  filemgr.BackgroundColor = "white";
+  filemgr.checkFileFlags = checkFileFlags;
+
+  filemgr.WebPageTitle = "ESP32 SD Card Manager";
+
+  filemgr.HttpUsername = "admin";
+  filemgr.HttpPassword = "admin123";
+
+  if (!filemgr.AddFS(SD, "SD Card", true))
+  {
+    Serial.println("AddFS failed!");
     return;
   }
 
-  Serial.print("Card type: ");
-
-  if (cardType == CARD_MMC) {
-    Serial.println("MMC");
-  } else if (cardType == CARD_SD) {
-    Serial.println("SDSC");
-  } else if (cardType == CARD_SDHC) {
-    Serial.println("SDHC");
-  } else {
-    Serial.println("UNKNOWN");
+  if (!filemgr.begin())
+  {
+    Serial.println("File manager failed!");
+    return;
   }
 
-  uint64_t cardSize = SD.cardSize() / (1024 * 1024);
-  Serial.printf("Card size: %llu MB\n", cardSize);
-
-  listDir(SD, "/", 2);
-
-  writeFile(SD, "/test.txt", "Hello from LILYGO ESP32 using PlatformIO!\n");
-  readFile(SD, "/test.txt");
-
-  Serial.println("SD test finished.");
+  Serial.println("File manager started.");
 }
 
-void loop() {
+void loop()
+{
+  filemgr.handleClient();
 }
