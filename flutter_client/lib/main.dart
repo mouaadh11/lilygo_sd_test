@@ -98,10 +98,9 @@ class ApiException implements Exception {
 }
 
 class EspApi {
-  EspApi(String baseUrl, {this.debugLog}) : baseUrl = _cleanBaseUrl(baseUrl);
+  EspApi(String baseUrl) : baseUrl = _cleanBaseUrl(baseUrl);
 
   final String baseUrl;
-  final void Function(String message)? debugLog;
 
   static String _cleanBaseUrl(String value) {
     var cleaned = value.trim();
@@ -120,15 +119,9 @@ class EspApi {
     Map<String, String>? query,
   ]) async {
     final requestUri = uri(path, query);
-    final stopwatch = Stopwatch()..start();
-    debugLog?.call('GET $requestUri');
     final response = await http
         .get(requestUri)
         .timeout(const Duration(seconds: 12));
-    debugLog?.call(
-      'GET ${requestUri.path} -> ${response.statusCode} '
-      '${response.bodyBytes.length}B in ${stopwatch.elapsedMilliseconds}ms',
-    );
     return _decodeJson(response);
   }
 
@@ -137,15 +130,9 @@ class EspApi {
     Map<String, String>? query,
   ]) async {
     final requestUri = uri(path, query);
-    final stopwatch = Stopwatch()..start();
-    debugLog?.call('POST $requestUri');
     final response = await http
         .post(requestUri)
         .timeout(const Duration(seconds: 20));
-    debugLog?.call(
-      'POST ${requestUri.path} -> ${response.statusCode} '
-      '${response.bodyBytes.length}B in ${stopwatch.elapsedMilliseconds}ms',
-    );
     return _decodeJson(response);
   }
 
@@ -192,16 +179,9 @@ class EspApi {
 
   Future<PreviewImage> preview(String path) async {
     final requestUri = previewUri(path);
-    final stopwatch = Stopwatch()..start();
-    debugLog?.call('GET $requestUri');
     final response = await http
         .get(requestUri, headers: const {'Accept': 'image/jpeg'})
         .timeout(const Duration(seconds: 12));
-    debugLog?.call(
-      'GET ${requestUri.path} -> ${response.statusCode} '
-      '${response.bodyBytes.length}B in ${stopwatch.elapsedMilliseconds}ms '
-      'source=${response.headers['x-preview-source'] ?? '-'}',
-    );
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
       String message = 'No fast preview available';
@@ -235,8 +215,6 @@ class EspApi {
   Future<void> upload(String folderPath, PlatformFile file) async {
     final requestUri = uri('/api/upload', {'path': folderPath});
     final request = http.MultipartRequest('POST', requestUri);
-    final stopwatch = Stopwatch()..start();
-    debugLog?.call('UPLOAD ${file.name} ${file.size}B -> $requestUri');
 
     if (!kIsWeb && file.path != null) {
       request.files.add(
@@ -256,10 +234,6 @@ class EspApi {
 
     final streamed = await request.send();
     final response = await http.Response.fromStream(streamed);
-    debugLog?.call(
-      'UPLOAD ${file.name} -> ${response.statusCode} '
-      '${response.bodyBytes.length}B in ${stopwatch.elapsedMilliseconds}ms',
-    );
     _decodeJson(response);
   }
 }
@@ -282,8 +256,6 @@ class _BrowserPageState extends State<BrowserPage> {
   bool _hasMore = false;
   bool _loading = false;
   bool _connected = false;
-  bool _showDebug = true;
-  final List<String> _debugMessages = [];
 
   @override
   void initState() {
@@ -305,30 +277,12 @@ class _BrowserPageState extends State<BrowserPage> {
     }
   }
 
-  void _debug(String message) {
-    final timestamp = DateTime.now().toIso8601String().substring(11, 19);
-    final line = '$timestamp  $message';
-    debugPrint(line);
-
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _debugMessages.insert(0, line);
-      if (_debugMessages.length > 60) {
-        _debugMessages.removeRange(60, _debugMessages.length);
-      }
-    });
-  }
-
   Future<void> _connect() async {
-    final api = EspApi(_baseUrlController.text, debugLog: _debug);
+    final api = EspApi(_baseUrlController.text);
     setState(() {
       _loading = true;
       _status = 'Connecting...';
     });
-    _debug('Connect start baseUrl=${api.baseUrl}');
 
     try {
       final info = await api.info();
@@ -346,10 +300,8 @@ class _BrowserPageState extends State<BrowserPage> {
         _status = 'Connected. Loading / ...';
       });
 
-      _debug('Connected to ${api.baseUrl}; loading root folder');
       await _refresh(force: true);
     } catch (error) {
-      _debug('Connect failed: $error');
       setState(() {
         _connected = false;
         _status = 'Connection failed: $error';
@@ -362,7 +314,6 @@ class _BrowserPageState extends State<BrowserPage> {
   }
 
   Future<void> _refresh({bool force = false}) async {
-    _debug('Refresh path=$_currentPath force=$force');
     setState(() {
       _items = [];
       _offset = 0;
@@ -374,12 +325,10 @@ class _BrowserPageState extends State<BrowserPage> {
   Future<void> _loadMore({bool force = false}) async {
     final api = _api;
     if (api == null) {
-      _debug('Load skipped: API is not connected');
       return;
     }
 
     if (_loading && !force) {
-      _debug('Load skipped: another operation is busy');
       return;
     }
 
@@ -389,12 +338,7 @@ class _BrowserPageState extends State<BrowserPage> {
     });
 
     try {
-      _debug('List request path=$_currentPath offset=$_offset limit=$pageSize');
       final page = await api.list(path: _currentPath, offset: _offset);
-      _debug(
-        'List response items=${page.items.length} count=${page.count} '
-        'hasMore=${page.hasMore}',
-      );
       setState(() {
         _items = [..._items, ...page.items];
         _offset += page.count;
@@ -404,7 +348,6 @@ class _BrowserPageState extends State<BrowserPage> {
             : 'Loaded ${_items.length} item(s)';
       });
     } catch (error) {
-      _debug('List failed: $error');
       setState(() => _status = 'List failed: $error');
     } finally {
       if (mounted) {
@@ -475,7 +418,6 @@ class _BrowserPageState extends State<BrowserPage> {
     if (api == null) return;
 
     final path = _joinPath(_currentPath, item.name);
-    _debug('Fast preview $path');
 
     PreviewImage? preview;
     Object? previewError;
@@ -487,13 +429,8 @@ class _BrowserPageState extends State<BrowserPage> {
 
     try {
       preview = await api.preview(path);
-      _debug(
-        'Fast preview loaded ${_formatBytes(preview.bytes.length)} '
-        'source=${preview.source}',
-      );
     } catch (error) {
       previewError = error;
-      _debug('Fast preview failed for $path: $error');
     } finally {
       if (mounted) {
         setState(() {
@@ -647,7 +584,6 @@ class _BrowserPageState extends State<BrowserPage> {
       setState(() => _status = 'Uploaded ${file.name}');
       await _refresh(force: true);
     } catch (error) {
-      _debug('Upload failed: $error');
       setState(() => _status = 'Upload failed: $error');
     } finally {
       if (mounted) {
@@ -711,7 +647,6 @@ class _BrowserPageState extends State<BrowserPage> {
       await action();
       await _refresh(force: true);
     } catch (error) {
-      _debug('Mutation failed: $error');
       setState(() => _status = 'Operation failed: $error');
     } finally {
       if (mounted) {
@@ -872,13 +807,6 @@ class _BrowserPageState extends State<BrowserPage> {
         title: const Text('ESP32 SD NAS'),
         actions: [
           IconButton(
-            tooltip: 'Debug log',
-            onPressed: () => setState(() => _showDebug = !_showDebug),
-            icon: Icon(
-              _showDebug ? Icons.bug_report : Icons.bug_report_outlined,
-            ),
-          ),
-          IconButton(
             tooltip: 'Reconnect',
             onPressed: _loading ? null : _connect,
             icon: const Icon(Icons.wifi_find),
@@ -916,8 +844,6 @@ class _BrowserPageState extends State<BrowserPage> {
         ),
         const SizedBox(height: 16),
         Text(_status),
-        const SizedBox(height: 16),
-        _buildDebugPanel(),
       ],
     );
   }
@@ -936,7 +862,6 @@ class _BrowserPageState extends State<BrowserPage> {
             child: Text(_status, style: Theme.of(context).textTheme.bodySmall),
           ),
         ),
-        _buildDebugPanel(),
         Expanded(
           child: RefreshIndicator(
             onRefresh: _refresh,
@@ -982,54 +907,6 @@ class _BrowserPageState extends State<BrowserPage> {
           ),
         ),
       ],
-    );
-  }
-
-  Widget _buildDebugPanel() {
-    if (!_showDebug) {
-      return const SizedBox.shrink();
-    }
-
-    final lines = _debugMessages.take(8).toList(growable: false);
-
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.bug_report_outlined, size: 16),
-              const SizedBox(width: 6),
-              Text('Debug', style: Theme.of(context).textTheme.labelLarge),
-              const Spacer(),
-              TextButton(
-                onPressed: () => setState(_debugMessages.clear),
-                child: const Text('Clear'),
-              ),
-            ],
-          ),
-          if (lines.isEmpty)
-            const Text('No debug messages yet.')
-          else
-            for (final line in lines)
-              Padding(
-                padding: const EdgeInsets.only(top: 3),
-                child: SelectableText(
-                  line,
-                  style: Theme.of(
-                    context,
-                  ).textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
-                ),
-              ),
-        ],
-      ),
     );
   }
 
